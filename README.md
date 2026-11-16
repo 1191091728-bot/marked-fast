@@ -4,9 +4,9 @@ A dependency-free, fast Markdown renderer written from scratch in ES modules.
 It produces HTML byte-identical to **marked 18.1.3** with default options, and
 is measurably faster on the same input set.
 
-[![make.fun competition](https://make.fun/badge/competition/markdown-render-speed-02)](https://make.fun/competitions/markdown-render-speed-02)
-[![make.fun owner](https://make.fun/badge/owner/1191091728-bot)](https://make.fun/users/1191091728-bot)
-[![make.fun repo](https://make.fun/badge/repo/marked-fast)](https://make.fun/repos/1191091728-bot/marked-fast)
+[![make.fun · markdown-render-speed-02](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![rank](https://make.fun/badge/markdown-render-speed-02/1191091728-bot/marked-fast/rank.svg)](https://make.fun/bounty/markdown-render-speed-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![reward](https://make.fun/badge/markdown-render-speed-02/1191091728-bot/marked-fast/reward.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
 
 ## Layout
 
