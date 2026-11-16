@@ -45,6 +45,14 @@ function isAlpha(code) {
 }
 function isAlnum(code) { return isAlpha(code) || isDigit(code); }
 
+// Unicode letter/number (word char for the emphasis-blocking rule),
+// excluding '_' (which does not block). ASCII is covered by \p{L}/\p{N}
+// too, but keep the fast path.
+const WORD_RE = /[\p{L}\p{N}]/u;
+function isWordChar(code) {
+  return code !== 0 && (isAlnum(code) || WORD_RE.test(String.fromCharCode(code)));
+}
+
 // ---- escaping ----
 // Text / attribute escaping (marked's "noEncode" mode): escape < > " ' always,
 // and & only when it does not start a valid entity reference
@@ -286,22 +294,32 @@ function continueBlock(P, b) {
       return true;
     }
     case 'item': {
+      const relPad = b.pad - (b.baseCol || 0);
       // blank after the outer container markers were consumed (a line of
       // just quote markers counts as blank here)
       if (/^[ \t]*$/.test(rest(P))) {
         // a blank line continues an item that already has content; an
-        // empty item is closed by a blank line
-        if (b.ch.length > 0) { advanceSpaces(P); return true; }
+        // empty item is closed by a blank line. Consume only the item's
+        // own indent (relPad), not all whitespace: a tab straddling the
+        // indent boundary leaves its remainder as spaces (marked keeps
+        // 2 spaces for a lone tab in a relPad-2 item), which the
+        // blank-line branch then strips by the fence indent.
+        if (b.ch.length > 0) { advanceCols(P, relPad); return true; }
         return false;
       }
       const ind = peekIndent(P);
-      const relPad = b.pad - (b.baseCol || 0);
       if (ind >= relPad) { advanceCols(P, relPad); return true; }
-      // A fenced code block's content lines are protected by the fence:
-      // they belong to the code block even when not indented to the
-      // item's content column (a top-level line inside a fenced block
-      // in a list item must not end the block or the item).
-      if (P.tip.t === 'code' && P.tip.fenced) return true;
+      // A fenced code block's content lines are protected by the fence
+      // ONLY once the fence has at least one content line: if the FIRST
+      // content line does not reach the item's content column, the fence
+      // ends empty (marked) and the item closes. (doc-13: a ` ````sh `
+      // fence whose first content line is at column 0 produces an empty
+      // code block; doc-02: the first content line is indented, so later
+      // column-0 lines stay protected.)
+      if (P.tip.t === 'code' && P.tip.fenced) {
+        if (P.tip.str.length === 0) return false;
+        return true;
+      }
       return false;
     }
     case 'code': {
@@ -919,9 +937,19 @@ function incorporateLine(P, lineText) {
     }
     if (P.tip.t === 'code') {
       // blank lines are content of fenced/indented code blocks, with the
-      // block's indent stripped (fence indent, or 4 for indented code)
+      // block's indent stripped (fence indent, or 4 for indented code).
+      // A tab straddling the strip boundary is removed as a whole
+      // (marked: fence indent 3 + a lone tab gives an empty line, not a
+      // 1-space remainder), so strip with a whole-tab loop, not
+      // advanceCols (which rewrites a partial tab into spaces).
       const strip = P.tip.fenced ? P.tip.fenceIndent : 4;
-      advanceCols(P, Math.min(strip, peekIndent(P)));
+      let n = Math.min(strip, peekIndent(P));
+      while (n > 0 && P.loff < P.llen) {
+        const c = P.ltext.charCodeAt(P.loff);
+        if (c === 32) { P.loff++; P.lcol++; n--; }
+        else if (c === 9) { const w = 4 - (P.lcol % 4); P.loff++; P.lcol += w; n -= w; if (n < 0) n = 0; }
+        else break;
+      }
       addCodeLine(P, P.tip, rest(P));
     } else if (P.tip.t === 'html' && P.tip.kind <= 5 && !P.tip.ended) {
       // blank lines are content of HTML blocks of types 1-5 only (and
@@ -1222,8 +1250,23 @@ function incorporateLine(P, lineText) {
         // "- ```" + "  \tindented" gives "  indented". When the fence
         // stripping consumed indent, a surviving tab stays literal
         // ("   ```" + "   \tindented" gives "\tindented").
+        // When the fence sits inside a blockquote that itself sits in
+        // a list item, the tab expands to the next tab stop measured
+        // from the list item's content column (the blockquote marker
+        // does not count toward the tab stop): a tab at absolute column
+        // 4 inside a "* " item (pad 2) is at relative column 2, so it
+        // expands to 2 spaces, not 4. A fence directly in a list item
+        // (no blockquote) uses the absolute column instead.
         if (r.charCodeAt(0) === 9 && tip.fenceIndent === 0 && P.lcol > 0) {
-          const w = 4 - (P.lcol % 4);
+          let baseCol = 0;
+          let b = tip;
+          let seenQuote = false;
+          while (b) {
+            if (b.t === 'quote') seenQuote = true;
+            if (b.t === 'item') { if (seenQuote) baseCol = b.pad; break; }
+            b = b.parent;
+          }
+          const w = 4 - ((P.lcol - baseCol) % 4);
           r = ' '.repeat(w) + r.slice(1);
         }
         addCodeLine(P, tip, r);
@@ -1704,16 +1747,38 @@ function delimFlags(ch, before, after) {
 
 // Process emphasis / strikethrough delimiters in a node list (in place).
 // Delimiter nodes accumulate open/close tags; unused ones render as text.
+// True when the nodes strictly between d1 and d2 contain no whitespace
+// (used to decide whether a closer run's leftover asterisks render
+// inside the emphasis, before its close tag).
+function attachedSpan(nodes, d1, d2) {
+  const i1 = nodes.indexOf(d1);
+  const i2 = nodes.indexOf(d2);
+  if (i1 < 0 || i2 < 0 || i2 <= i1) return false;
+  for (let i = i1 + 1; i < i2; i++) {
+    const nd = nodes[i];
+    if (nd.t === 'softbr' || nd.t === 'br') return false;
+    if (nd.t === 'text' && /[ \t\n\r]/.test(nd.s)) return false;
+    if (nd.t !== 'text' && nd.t !== 'delim') return false;
+  }
+  return true;
+}
+
 function processEmphasis(nodes, delims) {
   // No openers_bottom optimisation: a closer that finds no opener (e.g.
   // blocked by the rule of 3 against one opener) must not hide earlier
   // openers from later closers (cm-411: *foo**bar**baz* needs the outer
   // '*' to stay visible after the inner '**' pair is resolved).
-  // Formed pairs are recorded as spans [openerIdx, closerIdx]; a new pair
-  // may not cross a span boundary (an opener inside a span cannot pair
-  // with a closer outside it: cm-469 *foo _bar* baz_ keeps the '_' literal
-  // because the '_' opener sits inside the '*' span but its closer is
-  // outside it).
+  // Formed pairs are recorded as spans [openerIdx, closerIdx, tag]; a new
+  // pair may not cross a span boundary (an opener inside a span cannot
+  // pair with a closer outside it: cm-469 *foo _bar* baz_ keeps the '_'
+  // literal because the '_' opener sits inside the '*' span but its
+  // closer is outside it). A single-asterisk <em> pair is also blocked
+  // when a **strong** span sits strictly inside it whose opener is NOT
+  // preceded by a word character AND whose closer IS immediately followed
+  // by a word character (marked's regex behaviour: *a **b**c* leaves the
+  // outer '*' literal, but *foo**bar**baz* (inner attached to a word),
+  // *a **b** c*, *a *b*c*, *a __b__c*, **a **b**c** and _a **b**c_ all
+  // form the outer pair).
   const spans = [];
   for (let di = 0; di < delims.length; di++) {
     const closer = delims[di];
@@ -1734,6 +1799,20 @@ function processEmphasis(nodes, delims) {
         if (k > a && k < b && di > b) { crosses = true; break; }
       }
       if (crosses) continue;
+      // blocked em: a strong span strictly inside this candidate pair,
+      // whose opener is not preceded by a word char and whose closer is
+      // immediately followed by a word char. Only when the outer closer
+      // run has at most 2 asterisks: with a *** closer the outer em
+      // forms and the leftover renders inside it.
+      const use0 = (opener.n >= 2 && closer.n >= 2) ? 2 : 1;
+      if (use0 === 1 && closer.ch === 42 && closer.n <= 2) {
+        let blocked = false;
+        for (let s = 0; s < spans.length; s++) {
+          const sp = spans[s];
+          if (sp[2] === 'strong' && sp[0] > k && sp[1] < di && !delims[sp[0]].bw && delims[sp[1]].aw) { blocked = true; break; }
+        }
+        if (blocked) continue;
+      }
       oi = k;
       break;
     }
@@ -1745,7 +1824,23 @@ function processEmphasis(nodes, delims) {
     opener.open.push(tag);
     closer.n -= use;
     closer.close.push(tag);
-    spans.push([oi, di]);
+    // leftover placement: when this closer run has leftover asterisks and
+    // an inner span is attached to it (no whitespace between the inner
+    // span's closer and this closer), the leftover renders BEFORE the
+    // close tag (inside the emphasis); otherwise after it. Only when the
+    // closer run originally had at least 3 asterisks (a ** closer's
+    // leftover renders outside).
+    if (closer.n > 0 && closer.n + use >= 3) {
+      let bestB = -1;
+      for (let s = 0; s < spans.length; s++) {
+        const sp = spans[s];
+        if (sp[0] > oi && sp[1] < di && sp[1] > bestB) bestB = sp[1];
+      }
+      if (bestB >= 0 && attachedSpan(nodes, delims[bestB], closer)) {
+        closer.litFirst = true;
+      }
+    }
+    spans.push([oi, di, tag]);
     if (closer.n > 0) di--; // reprocess this closer
   }
 }
@@ -1761,16 +1856,23 @@ function renderInline(nodes, inLink) {
       case 'br': out += '<br>'; break;
       case 'softbr': out += '\n'; break;
       case 'delim': {
+        // litFirst: a closer run's leftover asterisks render BEFORE its
+        // close tag (inside the emphasis) when an inner span is attached
+        // to it; otherwise after the close tag.
+        const lit = nd.n > 0 ? (nd.ch === 42 ? '*'.repeat(nd.n) : nd.ch === 95 ? '_'.repeat(nd.n) : '~'.repeat(nd.n)) : '';
+        if (nd.litFirst && lit) out += lit;
         for (const tag of nd.close) out += '</' + tag + '>';
-        if (nd.n > 0) out += nd.ch === 42 ? '*'.repeat(nd.n) : nd.ch === 95 ? '_'.repeat(nd.n) : '~'.repeat(nd.n);
+        if (!nd.litFirst && lit) out += lit;
         for (let k = nd.open.length - 1; k >= 0; k--) out += '<' + nd.open[k] + '>';
         break;
       }
       case 'link': {
-        // an autolink inside a link is flattened to plain text (links
-        // cannot nest: [a https://example.com b][ref] renders the URL
-        // as text inside the outer link, not as a nested <a>)
-        if (inLink) { out += escapeText(plainText(nd.ch)); break; }
+        // An autolink inside a link is flattened to plain text (links
+        // cannot nest) — EXCEPT an angle-bracket autolink <...>, which
+        // marked keeps as a nested <a>. Bare GFM autolinks (scheme/www/
+        // email) flatten; explicit links never occur here (blocked at
+        // parse time) but flatten defensively all the same.
+        if (inLink && !(nd.auto && nd.angle)) { out += escapeText(plainText(nd.ch)); break; }
         out += '<a href="' + escapeText(encodeHref(nd.href)) + '"';
         if (nd.title !== null && nd.title !== undefined) out += ' title="' + escapeText(nd.title) + '"';
         out += '>' + renderInline(nd.ch, true) + '</a>';
@@ -1855,7 +1957,7 @@ function parseInline(P, src) {
       const al = matchAngleAutolink(src, i, n);
       if (al) {
         flushText(i);
-        nodes.push({ t: 'link', href: al.href, title: null, auto: true, ch: [{ t: 'text', s: al.text }] });
+        nodes.push({ t: 'link', href: al.href, title: null, auto: true, angle: true, ch: [{ t: 'text', s: al.text }] });
         i = al.end;
         textStart = i;
         continue;
@@ -1979,7 +2081,7 @@ function parseInline(P, src) {
       const after = i + run < n ? src.charCodeAt(i + run) : 0;
       const flags = delimFlags(c, before, after);
       flushText(i);
-      const d = { t: 'delim', ch: c, n: run, canOpen: flags.canOpen, canClose: flags.canClose, open: [], close: [] };
+      const d = { t: 'delim', ch: c, n: run, canOpen: flags.canOpen, canClose: flags.canClose, open: [], close: [], aw: isWordChar(after), bw: isWordChar(before) };
       nodes.push(d);
       delims.push(d);
       i += run;
@@ -2024,8 +2126,40 @@ function parseInline(P, src) {
         ? (i === 0 || prev === 32 || prev === 9 || prev === 10 || prev === 42 || prev === 95 || prev === 126 || prev === 40)
         : true;
       if (okPrev) {
-        const end = matchExtUrl(src, i, n);
+        let end = matchExtUrl(src, i, n);
         if (end > i) {
+          // A bare URL inside link text stops at the bracket's closing
+          // ']' when that ']' starts an inline destination: in
+          // "[render simple https://example.org/x](https://www.example.com)"
+          // the URL is "https://example.org/x", not the whole
+          // "https://example.org/x](https://www.example.com)". Only the
+          // FIRST ']' after the URL start counts (it closes the open
+          // bracket); if it is not followed by '(' the bracket does not
+          // form a link and the URL runs free (r4). And if the open
+          // bracket's text already holds an explicit link, the bracket
+          // cannot form a link at all (links cannot nest), so the URL
+          // also runs free (doc-08: the outer bracket holds the inner
+          // "[cache large server](#to ...)" link).
+          let bi2 = brackets.length - 1;
+          while (bi2 >= 0 && !brackets[bi2].active) bi2--;
+          if (bi2 >= 0) {
+            const brIdx = brackets[bi2].idx;
+            let hasLink = false;
+            for (let k = brIdx + 1; k < nodes.length; k++) {
+              if (nodes[k].t === 'link' && !nodes[k].auto) { hasLink = true; break; }
+            }
+            if (!hasLink) {
+              let j = src.indexOf(']', i);
+              // ']' followed by '(' starts an inline destination, and
+              // ']' followed by '[' starts a reference label: in both
+              // cases the bracket closes here and the URL stops before
+              // it ("[the public www.moss.com/callback][valid-30]" links
+              // the URL only up to "callback").
+              if (j !== -1 && j < end && j + 1 < n && (src.charCodeAt(j + 1) === 40 || src.charCodeAt(j + 1) === 91)) {
+                end = backpedalEnd(src, i, j);
+              }
+            }
+          }
           const text = src.slice(i, end);
           flushText(i);
           nodes.push({ t: 'link', href: isWww ? 'http://' + text : text, title: null, auto: true, ch: [{ t: 'text', s: text }] });
@@ -2093,12 +2227,13 @@ function codeContent(s, fenced) {
   if (s.length === 0) return '';
   if (fenced) {
     // a fenced block keeps its blank lines except for one trailing
-    // newline when the last line is blank
+    // newline when the last line is blank: "\n\n" -> "\n", "\n" -> "",
+    // "" -> "" (an all-newline body drops exactly one trailing "\n")
     let allNl = true;
     for (let i = 0; i < s.length; i++) {
       if (s.charCodeAt(i) !== 10) { allNl = false; break; }
     }
-    if (allNl) return '';
+    if (allNl) return s.length >= 2 ? s.slice(0, -1) : '';
     if (s.length >= 2 && s.charCodeAt(s.length - 1) === 10 &&
         s.charCodeAt(s.length - 2) === 10) {
       return s.slice(0, -1);
