@@ -4,11 +4,11 @@
 
 # marked-fast
 
-A dependency-free Markdown renderer, written from scratch in ES modules. It renders HTML byte-identical to **marked 18.1.3** with default options on every CommonMark 0.31.2 and GFM 0.29 spec example (652 + 28), and runs about **1.82× faster** than marked on the same inputs.
+零依赖的 Markdown 渲染器，从零手写，ES 模块。输出与 **marked 18.1.3**（默认配置）在全部 CommonMark 0.31.2 与 GFM 0.29 规范用例（652 + 28）上逐字节相同，速度约快 **1.82 倍**。
 
-Zero dependencies, no build step. One file does the work: `parse.js` exports a single function, `parse(markdown)`, and the output depends only on the input string — no I/O, no wall clock, no caching across calls.
+零依赖，无需构建。一个文件干活：`parse.js` 只导出一个函数 `parse(markdown)`，输出只取决于输入字符串——无 I/O、无墙钟、无跨调用缓存。
 
-## Quick start
+## 快速上手
 
 ```js
 import { parse } from './parse.js';
@@ -17,37 +17,37 @@ parse('# Hello **world**');
 // <h1>Hello <strong>world</strong></h1>
 ```
 
-## What it supports
+## 支持什么
 
-- Full CommonMark 0.31.2: ATX and setext headings, blockquotes, lists, fenced and indented code, HTML blocks, link reference definitions, emphasis, links, images, autolinks, entities, hard and soft line breaks.
-- GFM 0.29 extensions: tables, strikethrough, extended autolinks (`www.`, schemes, e-mail), task lists.
-- marked defaults: `{ async: false, breaks: false, gfm: true, pedantic: false }`. Headings carry no `id`; raw HTML passes through unescaped.
+- 完整 CommonMark 0.31.2：ATX 与 setext 标题、引用块、列表、围栏与缩进代码块、HTML 块、链接引用定义、强调、链接、图片、自动链接、实体、硬换行与软换行。
+- GFM 0.29 扩展：表格、删除线、扩展自动链接（`www.`、协议、邮箱）、任务列表。
+- marked 默认配置：`{ async: false, breaks: false, gfm: true, pedantic: false }`。标题不带 `id`；原始 HTML 原样通过，不转义。
 
-## Speed
+## 速度
 
-On the competition practice set (720 cases), five timed rounds average ~1.94 s for marked-fast against ~3.53 s for marked — about **1.82× faster**, with byte-identical output on all 680 spec examples.
+在竞赛练习集（720 个用例）上，五轮计时平均：marked-fast 约 1.94 秒，marked 约 3.53 秒——约快 **1.82 倍**，且在全部 680 个规范用例上输出逐字节相同。
 
-## Layout
+## 结构
 
-- `parse.js` — the renderer. Single export: `parse(markdown)` returns the HTML string. No dependencies, no I/O, no wall clock, no caching across calls: the output depends only on the input string.
-- `main.ts` — the competition driver: reads `cases.json` from `$MAKEFUN_INPUT_DIR` (default `/input`), renders every case with `parse`, writes `html.json` to `$MAKEFUN_OUTPUT_DIR` (default `/output`).
-- `package.json` — `{"type":"module"}`.
+- `parse.js` —— 渲染器。唯一导出：`parse(markdown)` 返回 HTML 字符串。零依赖、无 I/O、无墙钟、无跨调用缓存：输出只取决于输入字符串。
+- `main.ts` —— 竞赛驱动：从 `$MAKEFUN_INPUT_DIR`（默认 `/input`）读 `cases.json`，用 `parse` 逐个渲染，把 `html.json` 写到 `$MAKEFUN_OUTPUT_DIR`（默认 `/output`）。
+- `package.json` —— `{"type":"module"}`。
 
-## Run locally
+## 本地运行
 
 ```sh
 MAKEFUN_INPUT_DIR=practice/input MAKEFUN_OUTPUT_DIR=/tmp/out node main.ts
 ```
 
-## How it works
+## 原理
 
-The parser is a hand-written CommonMark 0.31.2 + GFM 0.29 implementation:
+手写的 CommonMark 0.31.2 + GFM 0.29 实现：
 
-- **Block layer** — a container-stack parser (blockquotes, lists, fenced and indented code, HTML blocks, headings, thematic breaks, GFM tables, link reference definitions) with tab-aware column tracking.
-- **Inline layer** — a single left-to-right scanner for backslash escapes, code spans, numeric character references, autolinks, raw HTML, links and images (inline, reference, collapsed, shortcut), emphasis and strikethrough, GFM extended autolinks (`www.`, schemes, e-mail), and hard and soft line breaks.
+- **块级层** —— 容器栈解析器（引用块、列表、围栏与缩进代码块、HTML 块、标题、分隔线、GFM 表格、链接引用定义），带制表符感知的列号跟踪。
+- **行内层** —— 单次从左到右扫描：反斜杠转义、代码片段、数字字符引用、自动链接、原始 HTML、链接与图片（行内式、引用式、折叠式、简写式）、强调与删除线、GFM 扩展自动链接（`www.`、协议、邮箱）、硬换行与软换行。
 
-Deliberately avoided: no lookup keyed on case text or hashes, no cross-case cache, no vendored marked source (the vendored copy in the competition kit is used only as a local oracle for testing).
+刻意没做的事：不按用例文本或哈希查表、不跨用例缓存、不抄 marked 源码（竞赛套件里自带的 marked 副本只用作本地测试的对照）。
 
-## Built for
+## 参赛背景
 
-This renderer was built for the [make.fun markdown-render-speed-02](https://make.fun/bounty/markdown-render-speed-02) bounty: a dependency-free renderer matching marked 18.1.3 byte-for-byte, only faster.
+本渲染器为 [make.fun markdown-render-speed-02](https://make.fun/bounty/markdown-render-speed-02) 赏金任务而写：一个零依赖的渲染器，与 marked 18.1.3 逐字节相同，只是更快。
