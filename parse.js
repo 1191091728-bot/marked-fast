@@ -1709,6 +1709,12 @@ function processEmphasis(nodes, delims) {
   // blocked by the rule of 3 against one opener) must not hide earlier
   // openers from later closers (cm-411: *foo**bar**baz* needs the outer
   // '*' to stay visible after the inner '**' pair is resolved).
+  // Formed pairs are recorded as spans [openerIdx, closerIdx]; a new pair
+  // may not cross a span boundary (an opener inside a span cannot pair
+  // with a closer outside it: cm-469 *foo _bar* baz_ keeps the '_' literal
+  // because the '_' opener sits inside the '*' span but its closer is
+  // outside it).
+  const spans = [];
   for (let di = 0; di < delims.length; di++) {
     const closer = delims[di];
     if (!closer.canClose || closer.n === 0) continue;
@@ -1721,6 +1727,13 @@ function processEmphasis(nodes, delims) {
       if ((opener.canClose || closer.canOpen) &&
           (opener.n + closer.n) % 3 === 0 &&
           (opener.n % 3 !== 0 || closer.n % 3 !== 0)) continue;
+      // no crossing: opener inside a formed span, closer outside it
+      let crosses = false;
+      for (let s = 0; s < spans.length; s++) {
+        const a = spans[s][0], b = spans[s][1];
+        if (k > a && k < b && di > b) { crosses = true; break; }
+      }
+      if (crosses) continue;
       oi = k;
       break;
     }
@@ -1732,6 +1745,7 @@ function processEmphasis(nodes, delims) {
     opener.open.push(tag);
     closer.n -= use;
     closer.close.push(tag);
+    spans.push([oi, di]);
     if (closer.n > 0) di--; // reprocess this closer
   }
 }
